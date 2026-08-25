@@ -1,0 +1,85 @@
+# Copyright 2022 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: macOS dylib
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build universal dylib
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          rustup update stable --no-self-update
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-dylib-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-dylib-
+      - name: Build (aarch64 + x86_64)
+        run: |
+          cargo build --release -p native-pkcs11 \
+            --target aarch64-apple-darwin \
+            --target x86_64-apple-darwin
+      - name: Create universal binary
+        run: |
+          mkdir -p dist
+          lipo -create -output dist/libnative_pkcs11.dylib \
+            target/aarch64-apple-darwin/release/libnative_pkcs11.dylib \
+            target/x86_64-apple-darwin/release/libnative_pkcs11.dylib
+          lipo -info dist/libnative_pkcs11.dylib
+          otool -L dist/libnative_pkcs11.dylib
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: libnative_pkcs11-macos-universal
+          path: dist/libnative_pkcs11.dylib
+          if-no-files-found: error
+
+  release:
+    name: Attach dylib to release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: libnative_pkcs11-macos-universal
+          path: dist
+      - name: Upload to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            dist/libnative_pkcs11.dylib \
+            --repo "${GITHUB_REPOSITORY}" --clobber
